@@ -1,0 +1,330 @@
+# ==============================================================================
+# kotowatch 設定・監視ルール定義ファイル（macOS 全機能網羅版）
+# ==============================================================================
+#
+# macOS 環境で kotowatch を起動すると、同ディレクトリに `rules.macos.yaml` があれば
+# 自動的にこのファイルが読み込まれます（または `--config rules.macos.yaml` で指定）。
+# ==============================================================================
+
+# ファイル操作（作成・変更・削除・リネーム）を重点監視するディレクトリ（macOS用）
+watch_paths:
+  - '~/Desktop'
+  - '~/Documents'
+  - '~/Downloads'
+  - '~/.ssh'
+  - '~/Library/LaunchAgents'
+  - '/Library/LaunchAgents'
+  - '/Library/LaunchDaemons'
+  - '/etc'
+
+rules:
+  # ============================================================================
+  # 1. プロセス・コマンドライン監視 (type: process)
+  # ============================================================================
+
+  # [1-1] シェル (zsh / bash / sh) による難読化・外部スクリプト直接実行
+  - id: suspicious_shell_execution
+    severity: HIGH
+    description: "Base64デコードや外部スクリプトのパイプ実行を伴うシェル実行を検知"
+    type: process
+    process_names:
+      - "zsh"
+      - "bash"
+      - "sh"
+    command_contains:
+      - "base64 -D"
+      - "base64 -d"
+      - "base64 --decode"
+      - "| sh"
+      - "| bash"
+      - "| zsh"
+      - "curl -fsSL"
+      - "eval $("
+      - "/dev/tcp/"
+
+  # [1-2] AppleScript / JXA (osascript) の悪用（権限昇格・パスワードダイアログ偽装）
+  - id: suspicious_osascript
+    severity: HIGH
+    description: "osascript (AppleScript/JXA) によるシェル実行やパスワードプロンプト表示を検知"
+    type: process
+    process_names:
+      - "osascript"
+    command_contains:
+      - "do shell script"
+      - "with administrator privileges"
+      - "hidden answer"
+      - "display dialog"
+      - "-l JavaScript"
+
+  # [1-3] Gatekeeper / Quarantine 属性の削除による検疫バイパス
+  - id: gatekeeper_quarantine_bypass
+    severity: HIGH
+    description: "xattr による検疫属性 (com.apple.quarantine) の削除または Gatekeeper 無効化を検知"
+    type: process
+    command_contains:
+      - "com.apple.quarantine"
+      - "xattr -c"
+      - "xattr -d"
+      - "xattr -r -d"
+      - "spctl --master-disable"
+      - "spctl --global-disable"
+
+  # [1-4] 不審なディレクトリ（/tmp や /Users/Shared 等）からの直接プログラム実行
+  - id: exec_from_suspicious_path
+    severity: HIGH
+    description: "一時フォルダ (/tmp, /var/tmp) や /Users/Shared からの直接プログラム実行を検知"
+    type: process
+    exe_path_contains:
+      - '/tmp/'
+      - '/private/tmp/'
+      - '/var/tmp/'
+      - '/private/var/tmp/'
+      - '/Users/Shared/'
+
+  # [1-5] Office for Mac・Preview等からの不審なシェル起動
+  - id: app_spawn_shell
+    severity: CRITICAL
+    description: "OfficeアプリやPDFビューアからの不審なシェル・osascript起動を検知"
+    type: process
+    process_names:
+      - "zsh"
+      - "bash"
+      - "sh"
+      - "osascript"
+      - "python3"
+    parent_names:
+      - "Microsoft Word"
+      - "Microsoft Excel"
+      - "Microsoft PowerPoint"
+      - "Microsoft Outlook"
+      - "Preview"
+      - "AdobeAcrobat"
+
+  # [1-6] リモートサービス (sshd 等) からのシェル起動
+  - id: remote_service_spawn_shell
+    severity: CRITICAL
+    description: "SSHデーモン (sshd) 等のリモート接続経由でのシェル起動を検知"
+    type: process
+    process_names:
+      - "zsh"
+      - "bash"
+      - "sh"
+    parent_names:
+      - "sshd"
+      - "sshd-session"
+
+  # [1-7] コマンドによるファイル削除・証跡抹消 (rm -rf / unlink / find -delete)
+  - id: command_file_deletion
+    severity: MEDIUM
+    description: "コマンドによるファイル削除（rm -f / rm -rf / find -delete）を検知"
+    type: process
+    command_contains:
+      - "rm -rf"
+      - "rm -fr"
+      - "rm -f "
+      - "srm "
+      - " -delete"
+
+  # [1-8] Time Machine スナップショット（バックアップ）の削除
+  - id: timemachine_snapshot_deletion
+    severity: CRITICAL
+    description: "Time Machine ローカルスナップショットの削除またはバックアップ無効化を検知"
+    type: process
+    command_contains:
+      - "tmutil deletelocalsnapshots"
+      - "tmutil disable"
+      - "tmutil stopbackup"
+
+  # [1-9] 永続化（LaunchAgents / LaunchDaemons / cron / LoginHook 登録）
+  - id: persistence_creation
+    severity: HIGH
+    description: "launchctl や crontab による自動起動（永続化）登録を検知"
+    type: process
+    command_contains:
+      - "launchctl load"
+      - "launchctl bootstrap"
+      - "launchctl enable"
+      - "crontab "
+      - "LoginHook"
+      - "LaunchAgents"
+      - "LaunchDaemons"
+
+  # [1-10] macOS キーチェーン・認証情報の窃取
+  - id: credential_keychain_access
+    severity: CRITICAL
+    description: "macOS キーチェーンからのパスワード抽出やダンプ操作を検知"
+    type: process
+    command_contains:
+      - "security find-generic-password"
+      - "security find-internet-password"
+      - "security dump-keychain"
+      - "security export"
+      - "dscl . -authonly"
+
+  # [1-11] 防御回避（macOS ファイアウォール無効化・TCCリセット・システムログ消去）
+  - id: defense_evasion_commands
+    severity: CRITICAL
+    description: "macOS ファイアウォール無効化、TCC権限リセット、またはシステムログ消去を検知"
+    type: process
+    command_contains:
+      - "socketfilterfw --setglobalstate off"
+      - "tccutil reset"
+      - "log erase --all"
+      - "csrutil disable"
+      - "HISTFILE=/dev/null"
+      - "history -c"
+
+  # [1-12] 端末内部偵察・アカウント・ネットワーク探索コマンド
+  - id: recon_and_account_commands
+    severity: LOW
+    description: "偵察・アカウント・ネットワーク確認コマンドの実行を検知"
+    type: process
+    process_names:
+      - "whoami"
+      - "id"
+      - "dscl"
+      - "dscacheutil"
+      - "scutil"
+      - "sw_vers"
+      - "arp"
+      - "last"
+
+  # ============================================================================
+  # 2. ネットワーク通信監視 (type: network)
+  # ============================================================================
+
+  # [2-1] 外部からのリモート接続着信（SSH / 画面共有 VNC / Apple Remote Desktop / SMB）
+  - id: inbound_remote_access
+    severity: HIGH
+    description: "外部からのリモート接続着信（SSH / VNC画面共有 / ARD / SMB）を検知"
+    type: network
+    direction: inbound
+    local_ports:
+      - 22    # SSH (リモートログイン)
+      - 445   # SMB (ファイル共有)
+      - 3283  # Apple Remote Desktop (ARD)
+      - 5900  # VNC / macOS 画面共有
+
+  # [2-2] シェル・スクリプトエンジンからの外部サーバ通信（リバースシェル等）
+  - id: shell_outbound_connection
+    severity: HIGH
+    description: "シェルやスクリプトエンジン（zsh / bash / osascript / python3 等）からの外部通信を検知"
+    type: network
+    direction: outbound
+    process_names:
+      - "zsh"
+      - "bash"
+      - "sh"
+      - "osascript"
+      - "python3"
+      - "python"
+      - "ruby"
+      - "perl"
+      - "php"
+
+  # [2-3] CLI通信・ファイル転送ツールによる外部通信
+  - id: cli_transfer_outbound
+    severity: MEDIUM
+    description: "CLI通信ツール（curl / wget / ssh / scp / nc / socat）による外部接続を検知"
+    type: network
+    direction: outbound
+    process_names:
+      - "curl"
+      - "wget"
+      - "ssh"
+      - "scp"
+      - "sftp"
+      - "nc"
+      - "ncat"
+      - "socat"
+
+  # [2-4] 不審な宛先ポート（C2 / バックドア / マイニング / Tor等）への通信
+  - id: suspicious_remote_port
+    severity: CRITICAL
+    description: "不審な宛先ポート（C2・バックドア・マイニング・Tor等）への外向き通信を検知"
+    type: network
+    direction: outbound
+    remote_ports:
+      - 1337
+      - 3333
+      - 4444
+      - 5555
+      - 6667
+      - 9001
+      - 9050
+
+  # ============================================================================
+  # 3. DNS・不審ドメイン監視 (type: network / dns)
+  # ============================================================================
+
+  # [3-1] トンネルサービス・外部ペーストサイト・動的DNS・Torドメインとの通信
+  - id: suspicious_tunnel_or_paste_domain
+    severity: HIGH
+    description: "トンネルサービス・ペーストサイト・不審ドメインへの通信を検知"
+    type: network
+    domains_contain:
+      - "ngrok"
+      - "trycloudflare.com"
+      - "localtunnel.me"
+      - "serveo.net"
+      - "pastebin.com"
+      - "webhook.site"
+      - "duckdns.org"
+      - ".onion"
+
+  # ============================================================================
+  # 4. ファイル操作監視 (type: file)
+  # ============================================================================
+
+  # [4-1] 監視対象ディレクトリ内でのファイル削除
+  - id: file_deleted_in_watched_dir
+    severity: HIGH
+    description: "監視対象ディレクトリ内でのファイル削除を検知"
+    type: file
+    actions:
+      - "DELETE"
+
+  # [4-2] 監視対象ディレクトリへのスクリプト・パッケージ・動的ライブラリ等の新規配置
+  - id: executable_or_script_dropped
+    severity: HIGH
+    description: "監視対象ディレクトリへのスクリプト・インストーラ・plist等の新規作成/書き換えを検知"
+    type: file
+    actions:
+      - "CREATE"
+      - "WRITE"
+      - "RENAME"
+    extensions:
+      - ".sh"
+      - ".zsh"
+      - ".command"
+      - ".py"
+      - ".scpt"
+      - ".applescript"
+      - ".pkg"
+      - ".dmg"
+      - ".dylib"
+      - ".plist"
+
+  # [4-3] macOS 重要ファイル・永続化パス（LaunchAgents / hosts / sudoers / SSH鍵）の変更
+  - id: critical_system_file_modified
+    severity: CRITICAL
+    description: "LaunchAgents/Daemons、/etc/hosts、SSH鍵、またはシェル設定ファイルへの変更を検知"
+    type: file
+    actions:
+      - "CREATE"
+      - "WRITE"
+      - "DELETE"
+      - "RENAME"
+    path_contains:
+      - '/LaunchAgents/'
+      - '/LaunchDaemons/'
+      - '/etc/hosts'
+      - '/etc/sudoers'
+      - '/etc/pam.d/'
+      - '.ssh/'
+      - 'authorized_keys'
+      - 'id_rsa'
+      - 'id_ed25519'
+      - '.zshrc'
+      - '.bash_profile'
+      - '.env'

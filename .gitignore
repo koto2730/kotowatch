@@ -1,0 +1,28 @@
+# Root temporary / local build binaries (keep release artifacts under build/)
+/kotowatch
+/kotowatch.exe
+/*.exe
+/*.test
+/*.out
+
+# Keep OS release folders under build/
+!build/
+!build/windows/**
+!build/macos/**
+!build/linux/**
+
+# Environment / Secret files
+.env
+.env.*
+*.pem
+*.key
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*.log
+*.tmp

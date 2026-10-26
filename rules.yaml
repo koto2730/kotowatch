@@ -1,0 +1,368 @@
+# ==============================================================================
+# kotowatch 設定・監視ルール定義ファイル（全機能網羅版）
+# ==============================================================================
+#
+# 【使用可能なルール種別 (type)】
+#   - process : プロセス起動・コマンドライン・親プロセス・実行パス・実行ユーザーの監視
+#   - network : TCP外向き接続(outbound)・内向き着信(inbound)・ポート・IP・通信元プロセスの監視
+#   - dns     : DNS名前解決クエリ（ドメイン名・解決先IP・クエリ元プロセス）の監視
+#   - file    : ファイル作成(CREATE)・変更(WRITE)・削除(DELETE)・リネーム(RENAME)・拡張子の監視
+#
+# 【使用可能な条件フィールド一覧】
+#   共通/Process : process_names, exclude_process_names, parent_names, exe_path_contains,
+#                  command_contains (OR一致), command_all (AND一致), exclude_command_contains,
+#                  users_contain
+#   Network/DNS  : direction (inbound/outbound), local_ports, remote_ports,
+#                  remote_ips_contain, domains_contain
+#   File         : actions (CREATE/WRITE/DELETE/RENAME), path_contains,
+#                  exclude_path_contains, extensions
+# ==============================================================================
+
+# ファイル操作（作成・変更・削除・リネーム）を重点監視するディレクトリ
+watch_paths:
+  - '%USERPROFILE%\Desktop'
+  - '%USERPROFILE%\Documents'
+  - '%USERPROFILE%\Downloads'
+  - '%USERPROFILE%\.ssh'
+  - '%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup'
+  - 'C:\Windows\System32\drivers\etc'
+
+rules:
+  # ============================================================================
+  # 1. プロセス・コマンドライン監視 (type: process)
+  # ============================================================================
+
+  # [1-1] PowerShell の難読化・非表示・ファイルレス実行
+  - id: suspicious_powershell
+    severity: HIGH
+    description: "難読化・非表示・外部コード取得を伴うPowerShell実行を検知"
+    type: process
+    process_names:
+      - "powershell.exe"
+      - "pwsh.exe"
+    command_contains:
+      - "-enc"
+      - "-EncodedCommand"
+      - "-WindowStyle Hidden"
+      - "-w hidden"
+      - "DownloadString"
+      - "DownloadFile"
+      - "Invoke-WebRequest"
+      - "Invoke-RestMethod"
+      - "Invoke-Expression"
+      - "IEX "
+      - "FromBase64String"
+      - "AmsiUtils"
+      - "-ExecutionPolicy Bypass"
+      - "-ep bypass"
+
+  # [1-2] 不審なディレクトリ（一時フォルダ・公開フォルダ等）からのプログラム実行
+  - id: exec_from_suspicious_path
+    severity: HIGH
+    description: "一時フォルダ(Temp)やPublicフォルダ等からの直接プログラム実行を検知"
+    type: process
+    exe_path_contains:
+      - '\AppData\Local\Temp\'
+      - '\Windows\Temp\'
+      - '\Users\Public\'
+      - '\PerfLogs\'
+      - '\ProgramData\Temp\'
+    exclude_process_names:
+      - "conhost.exe"
+      - "git.exe"
+
+  # [1-3] Office製品・PDFリーダー・ブラウザからのシェル起動（マクロ・エクスプロイト検知）
+  - id: app_spawn_shell
+    severity: CRITICAL
+    description: "OfficeアプリやPDFリーダー等からの不審なシェル起動を検知"
+    type: process
+    process_names:
+      - "cmd.exe"
+      - "powershell.exe"
+      - "pwsh.exe"
+      - "wscript.exe"
+      - "cscript.exe"
+      - "mshta.exe"
+      - "rundll32.exe"
+    parent_names:
+      - "WINWORD.EXE"
+      - "EXCEL.EXE"
+      - "POWERPNT.EXE"
+      - "OUTLOOK.EXE"
+      - "AcroRd32.exe"
+      - "Acrobat.exe"
+
+  # [1-4] リモート管理サービス（SSH / WinRM / WMI / サービス制御）からのシェル起動
+  - id: remote_service_spawn_shell
+    severity: CRITICAL
+    description: "リモートサービス（SSH/WinRM/WMI等）経由でのシェル起動を検知"
+    type: process
+    process_names:
+      - "cmd.exe"
+      - "powershell.exe"
+      - "pwsh.exe"
+    parent_names:
+      - "sshd.exe"
+      - "wsmprovhost.exe"
+      - "wmiprvse.exe"
+      - "rdesktop.exe"
+      - "winrs.exe"
+
+  # [1-5] コマンドによるファイル削除・証跡抹消（del / Remove-Item / cipher）
+  - id: command_file_deletion
+    severity: MEDIUM
+    description: "コマンドによるファイル削除（del / Remove-Item / 完全消去）を検知"
+    type: process
+    command_contains:
+      - "del "
+      - "erase "
+      - "Remove-Item"
+      - "rmdir /s"
+      - "rd /s"
+      - "cipher /w:"
+
+  # [1-6] バックアップ（シャドウコピー）・復旧機能の破壊（ランサムウェア特有挙動）
+  - id: ransomware_shadowcopy_deletion
+    severity: CRITICAL
+    description: "シャドウコピー（バックアップ）の削除またはOS復旧機能の無効化を検知"
+    type: process
+    command_contains:
+      - "vssadmin delete shadows"
+      - "vssadmin.exe delete shadows"
+      - "wmic shadowcopy delete"
+      - "wbadmin delete catalog"
+      - "bcdedit /set {default} recoveryenabled no"
+      - "bcdedit /set {default} bootstatuspolicy ignoreallfailures"
+
+  # [1-7] 永続化（自動起動レジストリ・スケジュールタスク・サービス作成）
+  - id: persistence_creation
+    severity: HIGH
+    description: "自動起動設定（タスクスケジューラ・サービス追加・Runレジストリ登録）を検知"
+    type: process
+    command_contains:
+      - "schtasks /create"
+      - "schtasks.exe /create"
+      - "Register-ScheduledTask"
+      - "sc create"
+      - "sc.exe create"
+      - "New-Service"
+      - 'CurrentVersion\Run'
+      - 'CurrentVersion\RunOnce'
+
+  # [1-8] 認証情報窃取・メモリダンプ・鍵探索（クレデンシャルアクセス）
+  - id: credential_access_commands
+    severity: CRITICAL
+    description: "認証情報・SAMレジストリ・LSASSメモリダンプ等の窃取コマンドを検知"
+    type: process
+    command_contains:
+      - 'reg save hklm\sam'
+      - 'reg save hklm\system'
+      - 'reg save hklm\security'
+      - "sekurlsa"
+      - "mimikatz"
+      - "procdump"
+      - "comsvcs.dll"
+      - "MiniDump"
+      - "ntdsutil"
+      - "cmdkey /list"
+      - "vaultcmd"
+
+  # [1-9] 防御回避（Windows Defender無効化・ファイアウォール解除・イベントログ消去）
+  - id: defense_evasion_commands
+    severity: CRITICAL
+    description: "セキュリティ機能（Defender/Firewall）の無効化やイベントログ消去を検知"
+    type: process
+    command_contains:
+      - "DisableRealtimeMonitoring"
+      - "Add-MpPreference -ExclusionPath"
+      - "netsh advfirewall set"
+      - "Set-NetFirewallProfile"
+      - "wevtutil cl"
+      - "wevtutil.exe cl"
+      - "Clear-EventLog"
+
+  # [1-10] LOLBins（OS標準ツールを悪用した外部ファイル取得・バイパス実行）
+  - id: lolbin_abuse
+    severity: HIGH
+    description: "OS標準ツール（LOLBin）を悪用した外部ファイル取得・コード実行を検知"
+    type: process
+    command_contains:
+      - "certutil -urlcache"
+      - "certutil -decode"
+      - "bitsadmin /transfer"
+      - "mshta "
+      - "mshta.exe"
+      - "regsvr32 /s /n /u /i:"
+      - "rundll32.exe javascript:"
+      - "msiexec /q /i http"
+
+  # [1-11] アカウント作成・管理者グループへの昇格操作
+  - id: account_manipulation
+    severity: CRITICAL
+    description: "ローカルユーザーの作成やAdministratorsグループへの追加操作を検知"
+    type: process
+    process_names:
+      - "net.exe"
+      - "net1.exe"
+    command_contains:
+      - "/add"
+      - "localgroup administrators"
+
+  # [1-12] 端末内部偵察・アカウント・ネットワーク探索コマンド
+  - id: recon_and_account_commands
+    severity: LOW
+    description: "偵察・アカウント・ネットワーク確認コマンドの実行を検知"
+    type: process
+    process_names:
+      - "whoami.exe"
+      - "net.exe"
+      - "net1.exe"
+      - "nltest.exe"
+      - "quser.exe"
+      - "qwinsta.exe"
+      - "systeminfo.exe"
+      - "arp.exe"
+
+  # ============================================================================
+  # 2. ネットワーク通信監視 (type: network)
+  # ============================================================================
+
+  # [2-1] 外部からのリモート接続着信（RDP / SSH / WinRM / SMB / VNC / Telnet）
+  - id: inbound_remote_access
+    severity: HIGH
+    description: "外部からのリモート接続着信（RDP / SSH / WinRM / SMB / VNC）を検知"
+    type: network
+    direction: inbound
+    local_ports:
+      - 22    # SSH
+      - 23    # Telnet
+      - 445   # SMB
+      - 3389  # RDP
+      - 5900  # VNC
+      - 5985  # WinRM (HTTP)
+      - 5986  # WinRM (HTTPS)
+
+  # [2-2] シェル・スクリプトエンジンからの外部サーバ通信（リバースシェル・ダウンローダ）
+  - id: shell_outbound_connection
+    severity: HIGH
+    description: "シェルやスクリプトエンジンからの外部サーバ通信を検知"
+    type: network
+    direction: outbound
+    process_names:
+      - "powershell.exe"
+      - "pwsh.exe"
+      - "cmd.exe"
+      - "certutil.exe"
+      - "mshta.exe"
+      - "wscript.exe"
+      - "cscript.exe"
+      - "regsvr32.exe"
+      - "rundll32.exe"
+      - "bitsadmin.exe"
+
+  # [2-3] CLI通信・ファイル転送ツールによる外部通信（データ持ち出し・トンネル確認）
+  - id: cli_transfer_outbound
+    severity: MEDIUM
+    description: "CLI通信ツール（curl / ssh / scp / ftp / ncat）による外部接続を検知"
+    type: network
+    direction: outbound
+    process_names:
+      - "curl.exe"
+      - "ssh.exe"
+      - "scp.exe"
+      - "sftp.exe"
+      - "ftp.exe"
+      - "nc.exe"
+      - "ncat.exe"
+      - "telnet.exe"
+
+  # [2-4] 不審な宛先ポート（C2 / バックドア / マイニング / Tor等）への通信
+  - id: suspicious_remote_port
+    severity: CRITICAL
+    description: "不審な宛先ポート（C2・バックドア・マイニング・Tor等）への外向き通信を検知"
+    type: network
+    direction: outbound
+    remote_ports:
+      - 1337  # 一般的なバックドア/C2
+      - 3333  # クリプトマイニングプール(Stratum)
+      - 4444  # Metasploit / リバースシェル既定ポート
+      - 5555  # Android ADB / バックドア
+      - 6667  # IRC C2
+      - 9001  # Tor リレー/C2
+      - 9050  # Tor SOCKS
+
+  # ============================================================================
+  # 3. DNS・不審ドメイン監視 (type: network / dns)
+  # ============================================================================
+
+  # [3-1] トンネルサービス・外部ペーストサイト・動的DNS・Torドメインとの通信/名前解決
+  - id: suspicious_tunnel_or_paste_domain
+    severity: HIGH
+    description: "トンネルサービス・ペーストサイト・不審ドメインへの名前解決または通信を検知"
+    type: network
+    domains_contain:
+      - "ngrok"
+      - "trycloudflare.com"
+      - "localtunnel.me"
+      - "serveo.net"
+      - "pastebin.com"
+      - "hastebin.com"
+      - "webhook.site"
+      - "requestbin"
+      - "duckdns.org"
+      - ".onion"
+
+  # ============================================================================
+  # 4. ファイル操作監視 (type: file)
+  # ============================================================================
+
+  # [4-1] 監視対象ディレクトリ内でのファイル削除（勝手なファイル消去の検知）
+  - id: file_deleted_in_watched_dir
+    severity: HIGH
+    description: "監視対象ディレクトリ内でのファイル削除を検知"
+    type: file
+    actions:
+      - "DELETE"
+
+  # [4-2] 監視対象ディレクトリへの実行ファイル・スクリプトファイルの新規配置
+  - id: executable_or_script_dropped
+    severity: HIGH
+    description: "監視対象ディレクトリへの実行ファイル・スクリプトの新規作成/書き換えを検知"
+    type: file
+    actions:
+      - "CREATE"
+      - "WRITE"
+      - "RENAME"
+    extensions:
+      - ".exe"
+      - ".dll"
+      - ".sys"
+      - ".bat"
+      - ".cmd"
+      - ".ps1"
+      - ".vbs"
+      - ".js"
+      - ".hta"
+      - ".scr"
+    exclude_path_contains:
+      - 'kotowatch.exe'
+
+  # [4-3] システム重要ファイル・永続化パス（hosts・スタートアップ・SSH鍵）の変更
+  - id: critical_system_file_modified
+    severity: CRITICAL
+    description: "hostsファイル、スタートアップフォルダ、またはSSH鍵・認証設定への変更を検知"
+    type: file
+    actions:
+      - "CREATE"
+      - "WRITE"
+      - "DELETE"
+      - "RENAME"
+    path_contains:
+      - 'drivers\etc\hosts'
+      - 'Start Menu\Programs\Startup'
+      - '.ssh\'
+      - 'authorized_keys'
+      - 'id_rsa'
+      - 'id_ed25519'
+      - '.env'
+      - '.kdbx'

@@ -1,0 +1,369 @@
+# ==============================================================================
+# kotowatch 設定・監視ルール定義ファイル（Linux 全機能網羅版）
+# ==============================================================================
+#
+# Linux 環境で kotowatch を起動すると、同ディレクトリに `rules.linux.yaml` または
+# `rules.yaml` があれば自動的に読み込まれます（`--config` でも指定可能）。
+# ==============================================================================
+
+# ファイル操作（作成・変更・削除・リネーム）を重点監視するディレクトリ（Linux用）
+watch_paths:
+  - '/etc'
+  - '/etc/ssh'
+  - '/etc/systemd/system'
+  - '/var/spool/cron'
+  - '/root/.ssh'
+  - '~/.ssh'
+  - '~/Desktop'
+  - '~/Documents'
+  - '~/Downloads'
+
+rules:
+  # ============================================================================
+  # 1. プロセス・コマンドライン監視 (type: process)
+  # ============================================================================
+
+  # [1-1] シェル (bash / sh / dash / zsh) による難読化・外部スクリプト直接パイプ実行
+  - id: suspicious_shell_execution
+    severity: HIGH
+    description: "Base64デコードや外部スクリプトのパイプ実行を伴うシェル実行を検知"
+    type: process
+    process_names:
+      - "bash"
+      - "sh"
+      - "dash"
+      - "zsh"
+    command_contains:
+      - "base64 -d"
+      - "base64 --decode"
+      - "| sh"
+      - "| bash"
+      - "| dash"
+      - "| zsh"
+      - "curl -fsSL"
+      - "wget -qO-"
+      - "eval $("
+      - "/dev/tcp/"
+      - "/dev/udp/"
+
+  # [1-2] リバースシェル・バインドシェルの定番ワンライナー実行
+  - id: reverse_shell_commands
+    severity: CRITICAL
+    description: "リバースシェル（nc -e / mkfifo / socat / python socket等）の起動を検知"
+    type: process
+    command_contains:
+      - "nc -e /bin/"
+      - "ncat -e /bin/"
+      - "mkfifo "
+      - "socat exec:"
+      - "socat tcp-connect:"
+      - "import socket,subprocess,os"
+      - "import pty;pty.spawn"
+      - "fsockopen("
+      - "bash -i >&"
+
+  # [1-3] 権限昇格・SUIDビット付与・コンテナ脱出（chmod +s / sudo / pkexec / nsenter）
+  - id: privilege_escalation_suid
+    severity: CRITICAL
+    description: "SUIDビット付与（chmod +s）や特権昇格・名前空間操作（nsenter/capsh）を検知"
+    type: process
+    command_contains:
+      - "chmod +s"
+      - "chmod u+s"
+      - "chmod 4755"
+      - "chmod 4777"
+      - "pkexec "
+      - "nsenter "
+      - "capsh --"
+
+  # [1-4] 不審なディレクトリ（/tmp, /var/tmp, /dev/shm）からの直接バイナリ実行
+  - id: exec_from_suspicious_path
+    severity: HIGH
+    description: "一時フォルダ (/tmp, /var/tmp) や共有メモリ (/dev/shm) からの直接実行を検知"
+    type: process
+    exe_path_contains:
+      - '/tmp/'
+      - '/var/tmp/'
+      - '/dev/shm/'
+      - '/run/shm/'
+
+  # [1-5] Webサーバ・DB・アプリ実行基盤からの不審なシェル起動（Webシェル・RCE検知）
+  - id: server_spawn_shell
+    severity: CRITICAL
+    description: "WebサーバやDBプロセス（nginx/apache/php-fpm/java/node等）からのシェル起動を検知"
+    type: process
+    process_names:
+      - "bash"
+      - "sh"
+      - "dash"
+      - "zsh"
+      - "python3"
+      - "python"
+      - "perl"
+      - "nc"
+      - "ncat"
+    parent_names:
+      - "nginx"
+      - "apache2"
+      - "httpd"
+      - "php-fpm"
+      - "php"
+      - "java"
+      - "node"
+      - "postgres"
+      - "mysqld"
+      - "redis-server"
+
+  # [1-6] リモート管理サービス (sshd 等) からのシェル起動
+  - id: remote_service_spawn_shell
+    severity: HIGH
+    description: "SSHデーモン (sshd) 等のリモート接続経由でのシェル起動を検知"
+    type: process
+    process_names:
+      - "bash"
+      - "sh"
+      - "dash"
+      - "zsh"
+    parent_names:
+      - "sshd"
+      - "sshd-session"
+
+  # [1-7] コマンドによるファイル削除・完全抹消 (rm -rf / shred / wipe / find -delete)
+  - id: command_file_deletion
+    severity: MEDIUM
+    description: "コマンドによるファイル削除・抹消（rm -rf / shred / wipe / find -delete）を検知"
+    type: process
+    command_contains:
+      - "rm -rf"
+      - "rm -fr"
+      - "rm -f "
+      - "shred "
+      - "wipe "
+      - " -delete"
+
+  # [1-8] カーネルモジュール・ルートキット・LD_PRELOAD の操作
+  - id: kernel_module_or_preload_abuse
+    severity: CRITICAL
+    description: "カーネルモジュール（insmod/modprobe/rmmod）または LD_PRELOAD 操作を検知"
+    type: process
+    command_contains:
+      - "insmod "
+      - "modprobe "
+      - "rmmod "
+      - "LD_PRELOAD="
+      - "ld.so.preload"
+
+  # [1-9] 永続化（cron / systemd サービス有効化 / rc.local 登録）
+  - id: persistence_creation
+    severity: HIGH
+    description: "crontab や systemctl enable による自動起動（永続化）登録を検知"
+    type: process
+    command_contains:
+      - "crontab "
+      - "systemctl enable"
+      - "systemctl daemon-reload"
+      - "/etc/rc.local"
+      - "/etc/cron"
+
+  # [1-10] パスワードハッシュ・認証情報（/etc/shadow / メモリダンプ）の窃取
+  - id: credential_shadow_access
+    severity: CRITICAL
+    description: "/etc/shadow の読み取りやパスワードクラック・メモリダンプ操作を検知"
+    type: process
+    command_contains:
+      - "/etc/shadow"
+      - "/etc/gshadow"
+      - "unshadow"
+      - "hashcat"
+      - "john "
+      - "/proc/"
+    exclude_process_names:
+      - "ps"
+      - "lsof"
+      - "kotowatch"
+
+  # [1-11] 防御回避（ファイアウォール解除・SELinux/AppArmor無効化・auditd停止・ログ消去）
+  - id: defense_evasion_commands
+    severity: CRITICAL
+    description: "Firewall解除、SELinux無効化、auditd停止、またはログ・履歴の消去を検知"
+    type: process
+    command_contains:
+      - "ufw disable"
+      - "iptables -F"
+      - "nft flush ruleset"
+      - "setenforce 0"
+      - "auditd stop"
+      - "auditctl -e 0"
+      - "history -c"
+      - "HISTFILE=/dev/null"
+      - "unset HISTFILE"
+      - "truncate -s 0 /var/log"
+      - "journalctl --vacuum"
+
+  # [1-12] 端末内部偵察・アカウント・ネットワーク探索コマンド
+  - id: recon_and_account_commands
+    severity: LOW
+    description: "偵察・アカウント・ネットワーク確認コマンドの実行を検知"
+    type: process
+    process_names:
+      - "whoami"
+      - "id"
+      - "uname"
+      - "last"
+      - "who"
+      - "w"
+      - "arp"
+      - "netstat"
+      - "ss"
+
+  # ============================================================================
+  # 2. ネットワーク通信監視 (type: network)
+  # ============================================================================
+
+  # [2-1] 外部からのリモート接続着信（SSH / Telnet / SMB / Docker API / Kubelet / VNC / Redis）
+  - id: inbound_remote_access
+    severity: HIGH
+    description: "外部からのリモート接続着信（SSH / Docker API / Kubelet / VNC / SMB）を検知"
+    type: network
+    direction: inbound
+    local_ports:
+      - 22     # SSH
+      - 23     # Telnet
+      - 445    # SMB (Samba)
+      - 2375   # Docker REST API (非暗号化)
+      - 2376   # Docker REST API (TLS)
+      - 3389   # xrdp
+      - 5900   # VNC
+      - 6379   # Redis
+      - 10250  # Kubernetes Kubelet API
+
+  # [2-2] シェル・スクリプトエンジンからの外部サーバ通信（リバースシェル・ダウンローダ）
+  - id: shell_outbound_connection
+    severity: HIGH
+    description: "シェルやスクリプトエンジン（bash / sh / python / perl / php 等）からの外部通信を検知"
+    type: network
+    direction: outbound
+    process_names:
+      - "bash"
+      - "sh"
+      - "dash"
+      - "zsh"
+      - "python3"
+      - "python"
+      - "perl"
+      - "ruby"
+      - "php"
+      - "lua"
+
+  # [2-3] CLI通信・ファイル転送ツールによる外部通信
+  - id: cli_transfer_outbound
+    severity: MEDIUM
+    description: "CLI通信ツール（curl / wget / ssh / scp / rsync / nc / socat）による外部接続を検知"
+    type: network
+    direction: outbound
+    process_names:
+      - "curl"
+      - "wget"
+      - "ssh"
+      - "scp"
+      - "sftp"
+      - "rsync"
+      - "nc"
+      - "ncat"
+      - "netcat"
+      - "socat"
+      - "ftp"
+      - "tftp"
+
+  # [2-4] 不審な宛先ポート（C2 / バックドア / マイニング / Tor等）への通信
+  - id: suspicious_remote_port
+    severity: CRITICAL
+    description: "不審な宛先ポート（C2・バックドア・マイニング・Tor等）への外向き通信を検知"
+    type: network
+    direction: outbound
+    remote_ports:
+      - 1337
+      - 3333
+      - 4444
+      - 5555
+      - 6667
+      - 9001
+      - 9050
+
+  # ============================================================================
+  # 3. DNS・不審ドメイン監視 (type: network / dns)
+  # ============================================================================
+
+  # [3-1] トンネルサービス・外部ペーストサイト・動的DNS・Torドメインとの通信
+  - id: suspicious_tunnel_or_paste_domain
+    severity: HIGH
+    description: "トンネルサービス・ペーストサイト・不審ドメインへの通信を検知"
+    type: network
+    domains_contain:
+      - "ngrok"
+      - "trycloudflare.com"
+      - "localtunnel.me"
+      - "serveo.net"
+      - "pastebin.com"
+      - "webhook.site"
+      - "duckdns.org"
+      - ".onion"
+
+  # ============================================================================
+  # 4. ファイル操作監視 (type: file)
+  # ============================================================================
+
+  # [4-1] 監視対象ディレクトリ内でのファイル削除
+  - id: file_deleted_in_watched_dir
+    severity: HIGH
+    description: "監視対象ディレクトリ内でのファイル削除を検知"
+    type: file
+    actions:
+      - "DELETE"
+
+  # [4-2] 監視対象ディレクトリへのスクリプト・共有ライブラリ・カーネルモジュール・systemdユニットの配置
+  - id: executable_or_script_dropped
+    severity: HIGH
+    description: "監視対象ディレクトリへのスクリプト・共有ライブラリ(.so)・カーネルモジュール(.ko)・service等の新規配置を検知"
+    type: file
+    actions:
+      - "CREATE"
+      - "WRITE"
+      - "RENAME"
+    extensions:
+      - ".sh"
+      - ".py"
+      - ".pl"
+      - ".rb"
+      - ".so"
+      - ".ko"
+      - ".service"
+      - ".timer"
+      - ".cron"
+
+  # [4-3] Linux 重要ファイル・永続化パス（/etc/passwd, /etc/shadow, sudoers, ld.so.preload, SSH鍵, systemd）の変更
+  - id: critical_system_file_modified
+    severity: CRITICAL
+    description: "/etc/passwd・shadow・sudoers・ld.so.preload・systemd・SSH鍵への変更を検知"
+    type: file
+    actions:
+      - "CREATE"
+      - "WRITE"
+      - "DELETE"
+      - "RENAME"
+    path_contains:
+      - '/etc/passwd'
+      - '/etc/shadow'
+      - '/etc/group'
+      - '/etc/sudoers'
+      - '/etc/ld.so.preload'
+      - '/etc/hosts'
+      - '/etc/crontab'
+      - '/etc/systemd/system/'
+      - '.ssh/'
+      - 'authorized_keys'
+      - 'id_rsa'
+      - 'id_ed25519'
+      - '.bashrc'
+      - '.profile'
+      - '.env'
